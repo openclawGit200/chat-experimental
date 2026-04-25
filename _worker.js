@@ -83,7 +83,7 @@ export default {
 
         const msg = { type: "user", name: account.name, text: text.trim(), ts: Date.now() };
         await storeMessage(env, room, msg);
-        ctx.waitUntil(triggerAiAgents(env, room, msg));
+        // AI 回覆由外部 Python background agent 負責，這裡不再自動觸發 Workers AI
 
         return jsonResponse({ ok: true, ts: msg.ts });
       }
