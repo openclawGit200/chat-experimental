@@ -1,0 +1,15 @@
+name = "chat-exp-pages"
+compatibility_date = "2025-01-04"
+pages_build_output_dir = "frontend/out"
+
+[[d1_databases]]
+binding = "chat_exp_db"
+database_name = "chat-exp-db"
+database_id = "ef3672ae-b3da-48c0-bfa9-85d9acca8cd9"
+
+[[kv_namespaces]]
+binding = "CHAT_KV"
+id = "e08f07e6510042298f9b236228e9245a"
+
+[ai]
+binding = "AI"

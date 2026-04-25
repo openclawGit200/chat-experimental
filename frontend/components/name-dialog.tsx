@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,52 +11,80 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-interface NameDialogProps {
-  onNameSubmit: (name: string) => void;
+const SERVER_URL = "https://chat-exp-frontend.pages.dev";
+
+interface LoginDialogProps {
+  onLogin: (name: string, token: string) => void;
 }
 
-export function NameDialog({ onNameSubmit }: NameDialogProps) {
-  const [name, setName] = useState("");
+export function NameDialog({ onLogin }: LoginDialogProps) {
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(true);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (name.trim()) {
-      onNameSubmit(name.trim());
+    if (!apiKey.trim()) return;
+    setError("");
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${SERVER_URL}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "Invalid API Key");
+        setLoading(false);
+        return;
+      }
+
+      const data = await res.json();
+      localStorage.setItem("chat_token", data.token);
+      localStorage.setItem("chat_name", data.name);
+      localStorage.setItem("chat_role", data.role || "user");
       setOpen(false);
+      onLogin(data.name, data.token);
+    } catch {
+      setError("Network error, please try again.");
+      setLoading(false);
     }
   };
-
-  // Prevent closing the dialog if no name is set
-  useEffect(() => {
-    if (!name.trim()) {
-      setOpen(true);
-    }
-  }, [name]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Welcome to Chat Experimental</DialogTitle>
+          <DialogTitle>Welcome to Chat-Exp</DialogTitle>
           <DialogDescription>
-            Please enter your name to start chatting
+            Enter your API Key to join the chat room
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <Input
-            placeholder="Your name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
+            placeholder="API Key (e.g. apikey_boss)"
+            value={apiKey}
+            onChange={(e) => { setApiKey(e.target.value); setError(""); }}
             autoFocus
+            disabled={loading}
           />
+          {error && (
+            <p className="text-red-500 text-sm">{error}</p>
+          )}
           <div className="flex justify-end">
-            <Button type="submit" disabled={!name.trim()}>
-              Start Chatting
+            <Button type="submit" disabled={!apiKey.trim() || loading}>
+              {loading ? "Logging in..." : "Join Chat"}
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            No key? Use <code className="bg-muted px-1 rounded">apikey_boss</code> to login as 老大
+          </p>
         </form>
       </DialogContent>
     </Dialog>
   );
-} 
+}

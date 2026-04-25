@@ -5,22 +5,19 @@
     "compatibility_flags": [
         "nodejs_compat"
     ],
-    "migrations": [
+    "d1_databases": [
         {
-            "tag": "v1",
-            "new_classes": [
-                "Chat"
-            ]
+            "binding": "chat_exp_db",
+            "database_name": "chat-exp-db",
+            "database_id": "ef3672ae-b3da-48c0-bfa9-85d9acca8cd9"
         }
     ],
-    "durable_objects": {
-        "bindings": [
-            {
-                "name": "CHATS",
-                "class_name": "Chat"
-            }
-        ]
-    },
+    "kv_namespaces": [
+        {
+            "binding": "CHAT_KV",
+            "id": "e08f07e6510042298f9b236228e9245a"
+        }
+    ],
     "ai": {
         "binding": "AI"
     }

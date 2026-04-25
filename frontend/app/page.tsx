@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -15,142 +15,194 @@ interface Message {
   type: "system" | "user" | "ai";
   name?: string;
   text: string;
+  ts?: number;
 }
 
 interface ChatState {
   messages: Message[];
-  isConnected: boolean;
+  lastTs: number;
 }
 
+const SERVER_URL = "https://chat-exp-frontend.pages.dev";
+
 export default function Home() {
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const [activeChannel, setActiveChannel] = useState("general");
   const [chatStates, setChatStates] = useState<Record<string, ChatState>>({
-    general: { messages: [], isConnected: false },
+    general: { messages: [], lastTs: 0 },
   });
   const [userName, setUserName] = useState("");
+  const [token, setToken] = useState("");
   const [inputMessage, setInputMessage] = useState("");
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  const currentChatState = chatStates[activeChannel] || { messages: [], isConnected: false };
-
-  // Scroll to bottom whenever messages change
+  // Restore session from localStorage on mount
   useEffect(() => {
-    const scrollToBottom = () => {
+    const savedToken = localStorage.getItem("chat_token");
+    const savedName = localStorage.getItem("chat_name");
+    if (savedToken && savedName) {
+      setToken(savedToken);
+      setUserName(savedName);
+    }
+  }, []);
+
+  const currentChatState = chatStates[activeChannel] || { messages: [], lastTs: 0 };
+
+  const scrollToBottom = useCallback(() => {
+    const timeoutId = setTimeout(() => {
       if (scrollAreaRef.current) {
-        const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+        const scrollContainer = scrollAreaRef.current.querySelector(
+          "[data-radix-scroll-area-viewport]"
+        );
         if (scrollContainer) {
           scrollContainer.scrollTop = scrollContainer.scrollHeight;
         }
       }
-    };
-
-    // Scroll immediately
-    scrollToBottom();
-
-    // Also scroll after a short delay to handle dynamic content loading
-    const timeoutId = setTimeout(scrollToBottom, 100);
-
+    }, 100);
     return () => clearTimeout(timeoutId);
-  }, [currentChatState.messages]);
+  }, []);
 
-  // Handle WebSocket connection when channel changes
+  useEffect(() => {
+    const cleanup = scrollToBottom();
+    return cleanup;
+  }, [currentChatState.messages, scrollToBottom]);
+
+  // Poll for messages using long-poll
+  const pollMessages = useCallback(async (room: string, since: number) => {
+    try {
+      const res = await fetch(
+        `${SERVER_URL}/api/chat/${room}/messages?since=${since}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) throw new Error("poll failed");
+      const data = await res.json();
+      const msgs: Message[] = data.messages || [];
+      if (msgs.length > 0) {
+        setChatStates((prev) => {
+          const roomState = prev[room] || { messages: [], lastTs: since };
+          const newMsgs = msgs.filter((m) => !roomState.messages.some((em) => em.ts === m.ts));
+          if (newMsgs.length === 0) return prev;
+          const lastMsg = msgs[msgs.length - 1];
+          return {
+            ...prev,
+            [room]: {
+              messages: [...roomState.messages, ...newMsgs],
+              lastTs: lastMsg.ts ?? roomState.lastTs,
+            },
+          };
+        });
+        setIsConnected(true);
+        return msgs[msgs.length - 1].ts ?? since;
+      } else {
+        setIsConnected(true);
+        return since;
+      }
+    } catch {
+      setIsConnected(false);
+      return since;
+    }
+  }, []);
+
+  // Start polling loop
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!userName) return;
 
-    // Clean up previous connection
-    if (ws) {
-      ws.close();
-      setWs(null);
-    }
+    const state = chatStates[activeChannel] || { messages: [], lastTs: 0 };
+    let currentSince = state.lastTs;
+    let polling = true;
 
-    setIsConnecting(true);
-
-    const wsConnection = new WebSocket(`ws://localhost:8787/api/chat/${activeChannel}`);
-
-    wsConnection.onopen = () => {
-      setWs(wsConnection);
-      setIsConnecting(false);
-      setChatStates(prev => ({
-        ...prev,
-        [activeChannel]: { ...prev[activeChannel], isConnected: true },
-      }));
-      wsConnection.send(JSON.stringify({
-        name: userName,
-        connectionEstablished: true,
-      }));
+    const loop = async () => {
+      while (polling) {
+        currentSince = await pollMessages(activeChannel, currentSince);
+        if (polling) await new Promise((r) => setTimeout(r, 1000));
+      }
     };
 
-    wsConnection.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      setChatStates(prev => ({
-        ...prev,
-        [activeChannel]: {
-          ...prev[activeChannel],
-          messages: [...prev[activeChannel].messages, message],
-        },
-      }));
+    loop();
+    return () => { polling = false; };
+  }, [activeChannel, userName, pollMessages]);
+
+  // Load history on mount / channel switch
+  useEffect(() => {
+    if (!userName) return;
+
+    const loadHistory = async () => {
+      try {
+        const res = await fetch(`${SERVER_URL}/api/chat/${activeChannel}?since=0`);
+        const data = await res.json();
+        const msgs: Message[] = data.messages || [];
+        if (msgs.length > 0) {
+          setChatStates((prev) => ({
+            ...prev,
+            [activeChannel]: {
+              messages: msgs,
+              lastTs: msgs[msgs.length - 1].ts ?? 0,
+            },
+          }));
+        }
+      } catch {
+        console.error("Failed to load history");
+      }
     };
 
-    wsConnection.onclose = () => {
-      setChatStates(prev => ({
-        ...prev,
-        [activeChannel]: { ...prev[activeChannel], isConnected: false },
-      }));
-      setWs(null);
-      setIsConnecting(false);
-    };
-
-    wsConnection.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      alert("Error connecting to chat server");
-      setIsConnecting(false);
-    };
-
-    // Cleanup on channel change or unmount
-    return () => {
-      wsConnection.close();
-    };
+    loadHistory();
   }, [activeChannel, userName]);
 
-  const sendMessage = () => {
-    console.log("checking send preconditions for message", inputMessage);
-    if (!inputMessage.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
-    console.log("sending message", inputMessage);
-
-    ws.send(JSON.stringify({
-      name: userName,
-      text: inputMessage,
-    }));
+  const sendMessage = useCallback(async () => {
+    if (!inputMessage.trim() || !token) return;
+    const text = inputMessage;
     setInputMessage("");
-  };
+
+    try {
+      const res = await fetch(`${SERVER_URL}/api/chat/${activeChannel}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok && res.status === 401) {
+        // Token expired, clear and re-login
+        localStorage.removeItem("chat_token");
+        localStorage.removeItem("chat_name");
+        localStorage.removeItem("chat_role");
+        setToken("");
+        setUserName("");
+      }
+    } catch {
+      console.error("Send error");
+      setInputMessage(text);
+    }
+  }, [inputMessage, activeChannel, token]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      sendMessage();
-    }
+    if (e.key === "Enter") sendMessage();
   };
 
   const handleChannelSelect = (channel: string) => {
     setActiveChannel(channel);
-    setChatStates(prev => ({
+    setChatStates((prev) => ({
       ...prev,
-      [channel]: prev[channel] || { messages: [], isConnected: false },
+      [channel]: prev[channel] || { messages: [], lastTs: 0 },
     }));
   };
 
-  const handleNameSubmit = (name: string) => {
+  const handleLogin = (name: string, authToken: string) => {
     setUserName(name);
+    setToken(authToken);
   };
 
   return (
     <>
-      <NameDialog onNameSubmit={handleNameSubmit} />
+      {!userName && <NameDialog onLogin={handleLogin} />}
       <div className="flex h-screen overflow-hidden">
         <aside className="hidden w-64 border-r md:block">
           <div className="flex h-full flex-col">
-            <div className="shrink-0 p-4 font-semibold border-b">Chat Experimental</div>
+            <div className="shrink-0 p-4 font-semibold border-b">
+              Chat Experimental
+            </div>
             <div className="flex-1 overflow-auto">
               <ChannelList
                 activeChannel={activeChannel}
@@ -165,61 +217,76 @@ export default function Home() {
             )}
           </div>
         </aside>
+
         <main className="flex-1 min-w-0">
           <div className="flex h-full">
             <Card className="flex-1 flex flex-col m-4">
-              <div className="shrink-0 border-b p-4 font-medium">
+              <div className="shrink-0 border-b p-4 font-medium flex items-center gap-2">
                 #{activeChannel}
-                {isConnecting && <span className="ml-2 text-sm text-muted-foreground">(Connecting...)</span>}
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full ${
+                    isConnected
+                      ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                      : "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                  }`}
+                >
+                  {isConnected ? "● Live" : "○ Reconnecting..."}
+                </span>
+                <span className="text-xs text-muted-foreground ml-auto">
+                  對 AI 說話用 @alor
+                </span>
               </div>
-              <ScrollArea 
-                className="flex-1 min-h-0"
-                ref={scrollAreaRef}
-              >
+
+              <ScrollArea className="flex-1 min-h-0" ref={scrollAreaRef}>
                 <div className="p-4 space-y-2">
+                  {currentChatState.messages.length === 0 && (
+                    <p className="text-center text-muted-foreground text-sm py-8">
+                      還沒有訊息，開始聊天吧！
+                    </p>
+                  )}
                   {currentChatState.messages.map((message, index) => (
                     <div
                       key={index}
                       className={`rounded-lg p-2 ${
                         message.type === "system"
-                          ? "bg-muted font-medium"
+                          ? "bg-muted font-medium text-center text-sm"
                           : message.type === "ai"
-                          ? "bg-blue-100 dark:bg-blue-900"
+                          ? "bg-blue-100 dark:bg-blue-900/50"
                           : ""
                       }`}
                       style={
-                        message.type === "system" || message.type === "ai"
+                        (message.type === "system" || message.type === "ai")
                           ? {}
-                          : { backgroundColor: getUserColor(message.name || '') }
+                          : { backgroundColor: getUserColor(message.name || "") }
                       }
                     >
                       {message.type === "system" ? (
                         message.text
-                      ) : message.type === "ai" ? (
-                        <>
-                          <span className="font-bold text-blue-600 dark:text-blue-300">{message.name}</span>:{' '}
-                          <span className="font-medium">{message.text}</span>
-                        </>
                       ) : (
                         <>
-                          <span className="font-medium">{message.name}</span>: {message.text}
+                          <span className="font-medium">
+                            {message.name}
+                          </span>
+                          : {message.text}
                         </>
                       )}
                     </div>
                   ))}
                 </div>
               </ScrollArea>
+
               <Separator />
+
               <div className="shrink-0 p-4">
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Type a message"
+                    placeholder={`說點什麼，或用 @alor 叫 AI 幫忙...`}
                     value={inputMessage}
                     onChange={(e) => setInputMessage(e.target.value)}
                     onKeyDown={handleKeyPress}
-                    disabled={isConnecting}
+                    disabled={!isConnected || !token}
                   />
-                  <Button onClick={sendMessage} disabled={isConnecting}>
+                  <Button onClick={sendMessage} disabled={!token}>
                     Send
                   </Button>
                 </div>
