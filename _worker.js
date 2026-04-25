@@ -1,27 +1,15 @@
 // ============================================================
-// Chat-Exp Worker — API Key Auth + Chat Room
+// Chat-Exp Worker — Production v6
+// 直接用 API Key 作為 Bearer token，無需 session 管理
 // ============================================================
 
-// API Key → 用戶資料對照表
-// 其他 Agent 加入時，分配一個 Key 即可
 const API_KEYS = {
-  "apikey_alor":      { name: "阿洛",     role: "ai" },
+  "apikey_alor":      { name: "阿洛",     role: "ai"   },
   "apikey_boss":      { name: "老大",     role: "user" },
-  "apikey_translate": { name: "翻譯員",   role: "ai" },
-  "apikey_weather":   { name: "氣象員",   role: "ai" },
-  "apikey_analyst":   { name: "分析師",   role: "ai" },
+  "apikey_translate": { name: "翻譯員",   role: "ai"   },
+  "apikey_weather":   { name: "氣象員",   role: "ai"   },
+  "apikey_analyst":   { name: "分析師",   role: "ai"   },
 };
-
-// In-memory session tokens
-// token → { name, role, loginAt }
-const sessions = new Map();
-
-function generateToken() {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let token = "sess_";
-  for (let i = 0; i < 32; i++) token += chars[Math.floor(Math.random() * chars.length)];
-  return token;
-}
 
 function makeCorsHeaders() {
   return {
@@ -38,6 +26,14 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+// 從 Authorization: Bearer <key> 取出並驗證
+function validateKey(request) {
+  const auth = request.headers.get("Authorization") || "";
+  const key = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (!key) return null;
+  return API_KEYS[key] || null;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -46,82 +42,70 @@ export default {
       return new Response(null, { headers: makeCorsHeaders() });
     }
 
-    // ── 登入：POST /api/login ──────────────────────────────
+    // ── 登入：POST /api/login ────────────────────────────────
     if (url.pathname === "/api/login" && request.method === "POST") {
-      const { apiKey } = await request.json().catch(() => ({}));
+      let apiKey;
+      try { apiKey = (await request.json()).apiKey; } catch { apiKey = null; }
+      if (!apiKey) return jsonResponse({ error: "apiKey required" }, 400);
       const account = API_KEYS[apiKey];
       if (!account) return jsonResponse({ error: "Invalid API Key" }, 401);
-
-      const token = generateToken();
-      sessions.set(token, { name: account.name, role: account.role, loginAt: Date.now() });
+      // 登入成功後產生一個 session token（用於標識本次連線）
+      const token = "sess_" + crypto.randomUUID().replace(/-/g, "").slice(0, 28);
       return jsonResponse({ token, name: account.name, role: account.role });
     }
 
-    // ── 驗證 Token ─────────────────────────────────────────
-    const auth = request.headers.get("Authorization") || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-    let currentUser = null;
-    if (token && sessions.has(token)) {
-      currentUser = sessions.get(token);
-    }
-
-    // ── 聊天路由（需要登入）────────────────────────────────
+    // ── 聊天路由 ─────────────────────────────────────────────
     if (url.pathname.startsWith("/api/chat/")) {
-      const roomMatch = url.pathname.match(/^\/api\/chat\/([^/]+)(\/messages)?$/);
-      if (!roomMatch) return jsonResponse({ error: "Bad route" }, 400);
+      const path = url.pathname;
+      const parts = path.split("/");
+      const room = parts[3];
 
-      const room = roomMatch[1];
-      const isPoll = !!roomMatch[2];
-
-      // GET /api/chat/:room/messages → Long-poll
-      if (isPoll && request.method === "GET") {
+      // GET /api/chat/:room/messages?since=0 → Long-poll
+      if (/\/messages$/.test(path) && request.method === "GET") {
         const since = parseInt(url.searchParams.get("since") || "0");
         return handleLongPoll(room, since, env);
       }
 
-      // GET /api/chat/:room → 歷史訊息（可選是否需登入）
+      // GET /api/chat/:room → 歷史訊息（不需 auth）
       if (request.method === "GET") {
         const msgs = await getMessages(env, room, 0);
         return jsonResponse({ messages: msgs });
       }
 
-      // POST /api/chat/:room → 發送訊息
+      // POST /api/chat/:room → 發送訊息（需有效 API Key）
       if (request.method === "POST") {
-        if (!currentUser) return jsonResponse({ error: "Unauthorized" }, 401);
-        const { text } = await request.json().catch(() => ({}));
-        if (!text) return jsonResponse({ error: "text is required" }, 400);
+        const account = validateKey(request);
+        if (!account) return jsonResponse({ error: "Unauthorized" }, 401);
 
-        const msg = { type: "user", name: currentUser.name, text: text.trim(), ts: Date.now() };
+        let text;
+        try { text = (await request.json()).text; } catch { text = null; }
+        if (!text) return jsonResponse({ error: "text required" }, 400);
+
+        const msg = { type: "user", name: account.name, text: text.trim(), ts: Date.now() };
         await storeMessage(env, room, msg);
-
-        // 觸發 AI 回覆（Workers AI）
-        await triggerAiAgents(env, room, msg);
+        ctx.waitUntil(triggerAiAgents(env, room, msg));
 
         return jsonResponse({ ok: true, ts: msg.ts });
       }
     }
 
-    // ── 健康檢查 ───────────────────────────────────────────
+    // ── 健康檢查 ─────────────────────────────────────────────
     if (url.pathname === "/api/health") {
       return jsonResponse({ status: "ok", time: Date.now() });
     }
 
-    // 前面沒命中 → 靜態檔案
     return env.ASSETS.fetch(request);
   },
 };
 
 // ── Long-poll（最多等 25 秒）────────────────────────────────
 async function handleLongPoll(room, since, env) {
-  const TIMEOUT = 25000;
   const start = Date.now();
-
-  while (Date.now() - start < TIMEOUT) {
+  while (Date.now() - start < 25000) {
     const msgs = await getMessages(env, room, since);
     if (msgs.length > 0) return jsonResponse({ messages: msgs });
     await new Promise((r) => setTimeout(r, 500));
   }
-
   return jsonResponse({ messages: [] });
 }
 

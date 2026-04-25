@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-OpenClaw Chat Room Agent — Token 模式
+OpenClaw Chat Room Agent — 直接用 API Key 當 Bearer token
 用 API Key 登入後，長輪詢監聽聊天室並自動回覆
 """
 
 import httpx
 import threading
 import time
-import json
 
 # ── 設定 ──────────────────────────────────────────────────
 SERVER_URL = "https://chat-exp-frontend.pages.dev"
 ROOM = "general"
-APIKEY = "apikey_alor"   # 向管理員申請的 API Key
+APIKEY = "apikey_alor"   # 直接當 Bearer token 用，不需要 login
 AGENT_NAME = "阿洛"
 TRIGGER = "@alor"
 KARING_URL = "https://apikeyproxy.ccwu.cc/nvidia/v1/chat/completions"
@@ -33,7 +32,6 @@ chat_history = []
 history_lock = threading.Lock()
 last_ts = 0
 running = True
-_token = ""
 
 
 def log(msg):
@@ -41,7 +39,7 @@ def log(msg):
 
 
 def login() -> str:
-    """用 API Key 登入，取回 session token"""
+    """用 API Key 登入，取回 name/role（token 不再用於 POST）"""
     r = httpx.post(
         f"{SERVER_URL}/api/login",
         headers={"Content-Type": "application/json"},
@@ -51,7 +49,7 @@ def login() -> str:
     r.raise_for_status()
     data = r.json()
     log(f"登入成功：{data['name']}（role={data['role']}）")
-    return data["token"]
+    return data["token"]  # 僅用於參考，POST 時直接用 APIKEY
 
 
 def generate_reply(user_name: str, user_text: str) -> str:
@@ -80,29 +78,18 @@ def generate_reply(user_name: str, user_text: str) -> str:
 
 
 def post_message(text: str) -> bool:
-    global _token
     try:
         r = httpx.post(
             f"{SERVER_URL}/api/chat/{ROOM}",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {_token}",
+                "Authorization": f"Bearer {APIKEY}",  # 直接用 API Key當 Bearer
             },
             json={"text": text},
             timeout=10.0,
         )
         if r.status_code == 401:
-            log("Token 過期，重新登入...")
-            _token = login()
-            r = httpx.post(
-                f"{SERVER_URL}/api/chat/{ROOM}",
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {_token}",
-                },
-                json={"text": text},
-                timeout=10.0,
-            )
+            log(f"401 Unauthorized，API Key 可能無效: {r.text}")
         return r.status_code == 200
     except Exception as e:
         log(f"POST 失敗: {e}")
@@ -141,20 +128,13 @@ def handle_message(msg: dict):
 
 
 def listen_loop():
-    global running, last_ts, _token
+    global running, last_ts
 
     while running:
         try:
+            # Long-poll（不需要 auth，直接 GET）
             url = f"{SERVER_URL}/api/chat/{ROOM}/messages?since={last_ts}"
-            resp = httpx.get(
-                url,
-                headers={"Authorization": f"Bearer {_token}"},
-                timeout=30.0,
-            )
-            if resp.status_code == 401:
-                log("Token 過期，重新登入...")
-                _token = login()
-                continue
+            resp = httpx.get(url, timeout=30.0)
 
             if resp.status_code != 200:
                 log(f"Poll HTTP {resp.status_code}，3秒後重試")
@@ -175,14 +155,15 @@ def listen_loop():
 
 
 def main():
-    global running, _token
+    global running
     log("=" * 45)
     log("  OpenClaw Chat Agent 啟動")
     log(f"  房間: {ROOM} | 觸發: {TRIGGER}")
     log("=" * 45)
 
-    # 登入
-    _token = login()
+    # 登入（拿 name/role，POST 時仍用 APIKEY）
+    login()
+    log(f"使用 API Key: {APIKEY}，直接當 Bearer token 發言")
 
     listen_loop()
 
