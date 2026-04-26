@@ -23,6 +23,9 @@ jobs:
         run: |
           cd frontend && npm install && NEXT_TELEMETRY_DISABLED=1 npx next build
 
+      - name: Copy _worker.js into out/
+        run: cp frontend/_worker.js frontend/out/_worker.js
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
         with:
