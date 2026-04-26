@@ -24,6 +24,13 @@ interface ChatState {
 }
 
 const SERVER_URL = "https://chat-exp-frontend.pages.dev";
+const MAX_MESSAGES = 200;
+
+function formatTime(ts: number): string {
+  if (!ts) return "";
+  const d = new Date(ts * 1000); // ts from D1 is unix seconds
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+}
 
 export default function Home() {
   const [activeChannel, setActiveChannel] = useState("general");
@@ -38,9 +45,14 @@ export default function Home() {
 
   // Restore session from localStorage on mount
   useEffect(() => {
-    const savedToken = localStorage.getItem("chat_token");
-    const savedName = localStorage.getItem("chat_name");
-    if (savedToken && savedName) {
+    const savedApiKey = localStorage.getItem("chat_api_key");
+    const savedToken  = localStorage.getItem("chat_token");
+    const savedName  = localStorage.getItem("chat_name");
+    if (savedApiKey && savedName) {
+      setToken(savedApiKey);
+      setUserName(savedName);
+    } else if (savedToken && savedName) {
+      // migrate legacy sessions
       setToken(savedToken);
       setUserName(savedName);
     }
@@ -83,10 +95,11 @@ export default function Home() {
           const newMsgs = msgs.filter((m) => !roomState.messages.some((em) => em.ts === m.ts));
           if (newMsgs.length === 0) return prev;
           const lastMsg = msgs[msgs.length - 1];
+          const combined = [...roomState.messages, ...newMsgs];
           return {
             ...prev,
             [room]: {
-              messages: [...roomState.messages, ...newMsgs],
+              messages: combined.slice(-MAX_MESSAGES),
               lastTs: lastMsg.ts ?? roomState.lastTs,
             },
           };
@@ -136,7 +149,7 @@ export default function Home() {
           setChatStates((prev) => ({
             ...prev,
             [activeChannel]: {
-              messages: msgs,
+              messages: msgs.slice(-MAX_MESSAGES),
               lastTs: msgs[msgs.length - 1].ts ?? 0,
             },
           }));
@@ -266,6 +279,9 @@ export default function Home() {
                         <>
                           <span className="font-medium">
                             {message.name}
+                          </span>
+                          <span className="text-xs text-muted-foreground ml-2">
+                            {formatTime(message.ts ?? 0)}
                           </span>
                           : {message.text}
                         </>
