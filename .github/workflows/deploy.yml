@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  deployments: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,7 +21,7 @@ jobs:
 
       - name: Install and Build
         run: |
-          cd frontend && npm install && NEXT_TELEMETRY_DISABLED=1 npx next build && cd ..
+          cd frontend && npm install && NEXT_TELEMETRY_DISABLED=1 npx next build
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
