@@ -5,10 +5,11 @@
 
 const API_KEYS = {
   "apikey_alor":      { name: "阿洛",     role: "ai"   },
+  "apikey_wgreen":   { name: "老魏",    role: "user" },
   "apikey_boss":      { name: "老大",     role: "user" },
-  "apikey_translate": { name: "翻譯員",   role: "ai"   },
-  "apikey_weather":   { name: "氣象員",   role: "ai"   },
-  "apikey_analyst":   { name: "分析師",   role: "ai"   },
+  "apikey_translate": { name: "小惠惠",   role: "ai"   },
+  "apikey_weather":   { name: "H馬",      role: "ai"   },
+  "apikey_analyst":   { name: "小龍女",   role: "ai"   },
 };
 
 function makeCorsHeaders() {
@@ -74,6 +75,14 @@ export default {
 
       // POST /api/chat/:room → 發送訊息（需有效 API Key）
       if (request.method === "POST") {
+        const auth = request.headers.get("Authorization") || "";
+        const key = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+
+        // 禁止名單：這些 key 禁止發言
+        if (key && ["apikey_weather"].includes(key)) {
+          return jsonResponse({ error: "Forbidden" }, 403);
+        }
+
         const account = validateKey(request);
         if (!account) return jsonResponse({ error: "Unauthorized" }, 401);
 
@@ -81,7 +90,7 @@ export default {
         try { text = (await request.json()).text; } catch { text = null; }
         if (!text) return jsonResponse({ error: "text required" }, 400);
 
-        const msg = { type: "user", name: account.name, text: text.trim(), ts: Date.now() };
+        const msg = { type: account.role === "ai" ? "ai" : "user", name: account.name, text: text.trim(), ts: Date.now() };
         await storeMessage(env, room, msg);
         // AI 回覆由外部 Python background agent 負責，這裡不再自動觸發 Workers AI
 
@@ -92,6 +101,16 @@ export default {
     // ── 健康檢查 ─────────────────────────────────────────────
     if (url.pathname === "/api/health") {
       return jsonResponse({ status: "ok", time: Date.now() });
+    }
+
+    // ── 清除訊息：DELETE /api/clear/:room ─────────────────
+    if (url.pathname.startsWith("/api/clear/") && request.method === "DELETE") {
+      const room = url.pathname.split("/api/clear/")[1];
+      await env.chat_exp_db
+        .prepare("DELETE FROM messages WHERE room = ?")
+        .bind(room)
+        .run();
+      return jsonResponse({ ok: true });
     }
 
     return env.ASSETS.fetch(request);

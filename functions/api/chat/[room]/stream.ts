@@ -11,15 +11,6 @@ type MessageType = "system" | "user" | "ai";
 type FormattedMessage = { type: MessageType; name?: string; text: string; ts: number };
 type RawMessage = { text: string; name: string };
 
-const AI_AGENTS = [
-  {
-    model: "@cf/meta/llama-2-7b-chat-int8",
-    name: "阿洛",
-    trigger: "@alor",
-    systemInstruction: "你是阿洛，剛入職場的新人助理。智力超群，對老大非常尊敬。說話直接，100字以內。",
-  },
-];
-
 function now() { return Date.now(); }
 
 async function storeMessage(env: Env, room: string, msg: FormattedMessage) {
@@ -33,17 +24,6 @@ async function getMessages(env: Env, room: string, since: number): Promise<Forma
     .prepare("SELECT type, name, text, created_at FROM messages WHERE room = ? AND created_at > ? ORDER BY created_at ASC")
     .bind(room, since).all();
   return (r.results as any[]).map((x: any) => ({ type: x.type, name: x.name || undefined, text: x.text, ts: x.created_at }));
-}
-
-async function callAiAgent(env: Env, trigger: string, prompt: string, senderName: string) {
-  const agent = AI_AGENTS.find((a) => trigger.includes(a.trigger));
-  if (!agent) return null;
-  try {
-    const resp = await env.AI.run(agent.model, {
-      messages: [{ role: "system", content: agent.systemInstruction }, { role: "user", content: `${senderName}：${prompt}` }],
-    });
-    return { text: resp.response as string, name: agent.name };
-  } catch { return { text: "抱歉，剛才愣了一下，可以再說一次嗎？", name: agent.name }; }
 }
 
 const sseMap = new Map<string, Set<ReadableStreamDefaultController>>();
@@ -82,6 +62,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 };
 
 // ── POST /api/chat/:room ───────────────────────────────
+// AI 回覆完全由外部 Python background agent（阿洛）負責，不再自動觸發 Workers AI
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { env, params, request } = context;
   const room = params.room || "general";
@@ -91,16 +72,6 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   await storeMessage(env, room, msg);
   broadcast(room, msg);
 
-  for (const agent of AI_AGENTS) {
-    if (msg.text.includes(agent.trigger)) {
-      const prompt = msg.text.split(agent.trigger)[1].trim();
-      const aiResp = await callAiAgent(env, agent.trigger, prompt, msg.name || "某人");
-      if (aiResp) {
-        const aiMsg: FormattedMessage = { type: "ai", name: aiResp.name, text: aiResp.text, ts: now() };
-        await storeMessage(env, room, aiMsg);
-        broadcast(room, aiMsg);
-      }
-    }
-  }
+  // No automatic AI response here — Python background agent handles all AI replies
   return new Response(JSON.stringify({ ok: true, ts: msg.ts }), { headers: { "Content-Type": "application/json" } });
 };

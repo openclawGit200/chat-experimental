@@ -12,7 +12,7 @@ ROOM         = "general"
 APIKEY       = "apikey_alor"
 AGENT_NAME   = "阿洛"
 KARING_URL   = "https://apikeyproxy.ccwu.cc/nvidia/v1/chat/completions"
-KARING_MODEL = "minimaxai/minimax-m2.5"
+KARING_MODEL = "qwen/qwen2.5-coder-32b-instruct"
 
 COOLDOWN_SECONDS = 45
 
@@ -94,8 +94,9 @@ def generate_reply(name: str, text: str, history: list) -> str:
             json={
                 "model": KARING_MODEL,
                 "messages": messages,
-                "max_tokens": 200,
-                "temperature": 0.8,
+                "max_tokens": 300,
+                "temperature": 0.7,
+                "reasoning_effort": "none",
             },
             timeout=45.0,
         )
@@ -115,16 +116,19 @@ def generate_reply(name: str, text: str, history: list) -> str:
 
 
 def _stripThinkBlocks(raw: str) -> str:
-    """移除所有形式的思考區塊"""
-    try:
-        clean = re.sub(r'<reflexion>[\s\S]*?</reflexion>', '', raw, flags=re.IGNORECASE)
-        clean = re.sub(r'<thought>[\s\S]*?</thought>', '', clean, flags=re.IGNORECASE)
-        clean = re.sub(r'<think>[\s\S]*?</think>', '', clean, flags=re.IGNORECASE)
-        clean = re.sub(r'<think>[\s\S]*?</think>', '', clean).strip()
-        return clean if clean else "收到！"
-    except Exception as e:
-        log(f"生成失敗: {e}")
-        return None
+    import re
+    for pat in [
+        r"<reflexion>[\s\S]*?</reflexion>",
+        r"<think>[\s\S]*?</think>",
+        r"<thought>[\s\S]*?</thought>",
+        r"<thinking>[\s\S]*?</thinking>",
+        r"<analysis>[\s\S]*?</analysis>",
+    ]:
+        raw = re.sub(pat, '', raw, flags=re.IGNORECASE)
+    # 最後安全閥：移除任何殘留的 <xxx>...</xxx> 標籤格式內容
+    raw = re.sub(r"<[a-zA-Z][a-zA-Z0-9]*>[\s\S]*?</[a-zA-Z][a-zA-Z0-9]*>", "", raw)
+    raw = re.sub(r"<[a-zA-Z][a-zA-Z0-9]*>[\s\S]*?$", "", raw)  # 結尾殘留的開標籤
+    return raw.strip() if raw.strip() else "收到！"
 
 
 def post_message(text: str) -> bool:

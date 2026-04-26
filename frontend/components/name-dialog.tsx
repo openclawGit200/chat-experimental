@@ -44,11 +44,12 @@ export function NameDialog({ onLogin }: LoginDialogProps) {
       }
 
       const data = await res.json();
+      localStorage.setItem("chat_api_key", apiKey.trim());
       localStorage.setItem("chat_token", data.token);
       localStorage.setItem("chat_name", data.name);
       localStorage.setItem("chat_role", data.role || "user");
       setOpen(false);
-      onLogin(data.name, data.token);
+      onLogin(data.name, apiKey.trim());
     } catch {
       setError("Network error, please try again.");
       setLoading(false);

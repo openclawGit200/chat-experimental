@@ -1,4 +1,4 @@
-name = "chat-exp-frontend"
+name = "chat-exp-pages"
 compatibility_date = "2025-01-04"
 pages_build_output_dir = "frontend/out"
 
@@ -11,6 +11,5 @@ database_id = "ef3672ae-b3da-48c0-bfa9-85d9acca8cd9"
 binding = "CHAT_KV"
 id = "e08f07e6510042298f9b236228e9245a"
 
-# [ai]
-# binding = "AI"  ← 已停用，避免 Workers AI 自動回覆
-# 如需重新啟用，取消註解並執行：wrangler deploy
+[ai]
+binding = "AI"
